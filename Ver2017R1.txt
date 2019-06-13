@@ -1,0 +1,303 @@
+import collections
+import datetime
+import re
+import sys
+import traceback
+
+from ProtoBufParser import *
+
+FILE_PROTOBUF_EXT = "proto"
+FILE_HEADER_EXT = "h"
+FILE_CPP_EXT = "cc"
+FILE_PROTOBUF_IDENT = "pb"
+
+TEMPLATE_C_INCLUDE_GUARD_OPEN = '#ifndef {0}\n#define {0}\n\n'
+TEMPLATE_C_INCLUDE_GUARD_CLOSE = '#endif /* {} */'
+TEMPLATE_C_DO_NOT_EDIT = '/*\n * This file was automatically generated on {} by CProtoBufTool\n * DO NOT EDIT \n */\n\n'
+TEMPLATE_C_EXTERN_C_OPEN = '#ifdef __cplusplus\nextern "C" {\n#endif\n'
+TEMPLATE_C_EXTERN_C_CLOSE = '#ifdef __cplusplus\n} /* close extern "C" */\n#endif\n'
+TEMPLATE_C_PREFIX = 'C_{}'
+TEMPLATE_C_ENUM_BLOCK = 'typedef enum {{\n{}}} {};\n'
+TEMPLATE_C_ENUM_ENTRY = '    {} = {},\n'
+TEMPLATE_C_MESSAGE_SECTION = '/*\n * {} message type section\n */'
+TEMPLATE_C_HANDLE = '{}Handle'
+TEMPLATE_C_TYPEDEF_HANDLE = 'typedef void* {};\n'
+TEMPLATE_C_FUNC_DECL = '{} {}({});\n'
+TEMPLATE_C_FUNC_DEFN = '{}\n{{\n{}}}'
+TEMPLATE_C_INCLUDE_QUOTE = '#include "{}"\n'
+TEMPLATE_C_INCLUDE_ANGLE = '#include <{}>\n'
+TEMPLATE_C_CONSTRUCTOR_NAME = '{}_create'
+TEMPLATE_C_DESTRUCTOR_NAME = '{}_destroy'
+TEMPLATE_C_SETTER_NAME = '{}_set_{}'
+TEMPLATE_C_SETTER_ARG_LIST = '{} handle, {} value'
+TEMPLATE_C_ADDER_NAME = '{}_add_{}'
+TEMPLATE_C_INDENT = '    '
+
+TEMPLATE_CPP_RETURN_NEW_OBJECT = 'return new {}();\n'
+TEMPLATE_CPP_OBJECT_CAST = '{0}* object = reinterpret_cast<{0}*>(handle);\n'
+TEMPLATE_CPP_OBJECT_DELETE = 'delete object;\n'
+TEMPLATE_CPP_OBJECT_MEMBER_SET = 'object->{}(value);\n'
+TEMPLATE_CPP_OBJECT_ENUM_MEMBER_CAST = '{0} translated_value = static_cast<{0}>(value);\n'
+TEMPLATE_CPP_OBJECT_ENUM_MEMBER_SET = 'object->{}(translated_value);\n'
+
+FUNCTION_TYPE = 'function_type'
+FUNCTION_TYPE_CONSTRUCTOR = 'constructor'
+FUNCTION_TYPE_DESTRUCTOR = 'destructor'
+FUNCTION_TYPE_SETTER = 'setter'
+
+FUNCTION_CLASS = 'function_class'
+
+FUNCTION_DECL = 'function_decl'
+
+FUNCTION_NAME = 'function_name'
+
+FUNCTION_VALUE_TYPE = 'function_value_type'
+
+GLOBAL_BUILT_IN_TYPES_TABLE = {'double':'double',
+                               'float':'float',
+                               'int32':'int32_t',
+                               'int64':'int64_t',
+                               'uint32':'uint32_t',
+                               'uint64':'uint64_t',
+                               'sint32':'int32_t',
+                               'sint64':'int64_t',
+                               'fixed32':'uint32_t',
+                               'fixed64':'uint64_t',
+                               'sfixed32':'int32_t',
+                               'sfixed64':'int64_t',
+                               'bool':'int',
+                               'string':'const char*',
+                               'bytes':'const char*'}
+
+GLOBAL_ENUM_TABLE = dict()
+GLOBAL_CLASS_TABLE = dict()
+
+GLOBAL_FUNCTIONS_TABLE = collections.OrderedDict()
+
+def generate_constructor_declaration(message):
+    """
+    generate_constructor_declaration
+
+    Generate a C declaration (sometimes called prototype) for a constructor function. Also, save off any information
+    needed later for generating the actual function definition
+    """
+
+    class_name = message.full_name
+    constructor_name = TEMPLATE_C_CONSTRUCTOR_NAME.format(class_name)
+    constructor_decl_string = TEMPLATE_C_FUNC_DECL.format(GLOBAL_CLASS_TABLE[class_name], constructor_name, '')
+
+    function_descriptor = collections.OrderedDict()
+    function_descriptor.update({FUNCTION_TYPE:FUNCTION_TYPE_CONSTRUCTOR})
+    function_descriptor.update({FUNCTION_CLASS:class_name})
+    function_descriptor.update({FUNCTION_DECL:constructor_decl_string})
+    GLOBAL_FUNCTIONS_TABLE[class_name].append(function_descriptor)
+
+    return constructor_decl_string
+
+def generate_destructor_declaration(message):
+    """
+    generate_destructor_declaration
+
+    Generate a C declaration (sometimes called prototype) for a destructor function. Also, save off any information
+    needed later for generating the actual function definition
+    """
+
+    class_name = message.full_name
+    destructor_name = TEMPLATE_C_DESTRUCTOR_NAME.format(class_name)
+    destructor_decl_string = TEMPLATE_C_FUNC_DECL.format('void', destructor_name, 
+                                                         GLOBAL_CLASS_TABLE[class_name] + ' handle')
+
+    function_descriptor = collections.OrderedDict()
+    function_descriptor.update({FUNCTION_TYPE:FUNCTION_TYPE_DESTRUCTOR})
+    function_descriptor.update({FUNCTION_CLASS:class_name})
+    function_descriptor.update({FUNCTION_DECL:destructor_decl_string})
+    GLOBAL_FUNCTIONS_TABLE[class_name].append(function_descriptor)
+
+    return destructor_decl_string
+
+def generate_setter_declaration(message, message_entry):
+    """
+    generate_setter_declaration
+
+    Generate a C declaration (sometimes called prototype) for a setter function. Also, save off any information
+    needed later for generating the actual function definition
+    """
+
+    class_name = message.full_name
+    data_type = message_entry.data_type
+
+    if data_type in GLOBAL_BUILT_IN_TYPES_TABLE.keys():
+        c_type = GLOBAL_BUILT_IN_TYPES_TABLE[data_type]
+    elif data_type in GLOBAL_CLASS_TABLE.keys():
+        c_type = GLOBAL_CLASS_TABLE[data_type]
+    elif data_type in GLOBAL_ENUM_TABLE.keys():
+        c_type = GLOBAL_ENUM_TABLE[data_type]
+
+    if 'repeated' in message_entry.modifiers:
+        setter_name = TEMPLATE_C_ADDER_NAME.format(class_name, message_entry.name.lower())
+    else:
+        setter_name = TEMPLATE_C_SETTER_NAME.format(class_name, message_entry.name.lower())
+
+    setter_decl_string = TEMPLATE_C_FUNC_DECL.format('void', setter_name,
+                                                     TEMPLATE_C_SETTER_ARG_LIST.format(GLOBAL_CLASS_TABLE[class_name], c_type))
+
+    function_descriptor = collections.OrderedDict()
+    function_descriptor.update({FUNCTION_TYPE:FUNCTION_TYPE_SETTER})
+    function_descriptor.update({FUNCTION_CLASS:class_name})
+    function_descriptor.update({FUNCTION_DECL:setter_decl_string})
+    function_descriptor.update({FUNCTION_NAME:setter_name})
+    function_descriptor.update({FUNCTION_VALUE_TYPE:data_type})
+    GLOBAL_FUNCTIONS_TABLE[class_name].append(function_descriptor)
+
+    return setter_decl_string
+
+
+def generate_cenum(enum):
+    """
+    generate_cenum
+
+    Generate a C enumeration based on ProtoBufEnum from the parser
+    """
+
+    cenum_name = TEMPLATE_C_PREFIX.format(enum.full_name)
+    cenum_entries = ''
+    for cenum_id, cenum_value in enum.entries.items():
+        cenum_entries += TEMPLATE_C_ENUM_ENTRY.format(cenum_name + '_' + cenum_id, cenum_value)
+
+    return TEMPLATE_C_ENUM_BLOCK.format(cenum_entries, cenum_name)
+
+def generate_function_definition(function_descriptor):
+    """
+    generate_function_definition
+
+    Generate a single function definition based on the functions table that was built previously while
+    generating the function declarations
+    """
+
+    function_signature = function_descriptor[FUNCTION_DECL].replace(';', '').replace('\n', '')
+
+    if function_descriptor[FUNCTION_TYPE] == FUNCTION_TYPE_CONSTRUCTOR:
+        function_body = TEMPLATE_C_INDENT + TEMPLATE_CPP_RETURN_NEW_OBJECT.format(function_descriptor[FUNCTION_CLASS])
+    elif function_descriptor[FUNCTION_TYPE] == FUNCTION_TYPE_DESTRUCTOR:
+        function_body = TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_CAST.format(function_descriptor[FUNCTION_CLASS])
+        function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_DELETE
+    elif function_descriptor[FUNCTION_TYPE] == FUNCTION_TYPE_SETTER:
+        function_body = TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_CAST.format(function_descriptor[FUNCTION_CLASS])
+        setter_name_prefix = '{}_'.format(function_descriptor[FUNCTION_CLASS])
+        method_name = function_descriptor[FUNCTION_NAME].replace(setter_name_prefix, '')
+
+        if function_descriptor[FUNCTION_VALUE_TYPE] in GLOBAL_ENUM_TABLE.keys():
+            function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_ENUM_MEMBER_CAST.format(
+                    function_descriptor[FUNCTION_VALUE_TYPE])
+            function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_ENUM_MEMBER_SET.format(method_name)
+        else:
+            function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_MEMBER_SET.format(method_name)
+
+    function_string = TEMPLATE_C_FUNC_DEFN.format(function_signature, function_body)
+
+    return function_string
+
+def generate_oheader(oheader_filename, parser):
+    """
+    generate_oheader
+
+    Generate the output header file. This consists of typedefs, enum declarations, and function
+    declarations
+    """
+
+    oheader_string = ''
+
+    oheader_guard_symbol = oheader_filename.replace('.', '_').upper()
+    oheader_string += TEMPLATE_C_INCLUDE_GUARD_OPEN.format(oheader_guard_symbol)
+    oheader_string += TEMPLATE_C_DO_NOT_EDIT.format(datetime.datetime.now())
+    oheader_string += TEMPLATE_C_INCLUDE_ANGLE.format('stdint.h') + '\n'
+    oheader_string += TEMPLATE_C_EXTERN_C_OPEN + '\n'
+
+    # build the enum table
+    for enum in parser.enums:
+        GLOBAL_ENUM_TABLE.update({enum.full_name:TEMPLATE_C_PREFIX.format(enum.full_name)})
+        oheader_string += generate_cenum(enum) + '\n'
+
+    # first pass through the messages to build the global tables
+    # two passes are needed since some type information needed while building the function
+    # declarations cannot be gathered in a single pass
+    for message in parser.messages:
+        GLOBAL_FUNCTIONS_TABLE.update({message.full_name:list()})
+        handle_type = TEMPLATE_C_HANDLE.format(message.full_name)
+        GLOBAL_CLASS_TABLE.update({message.full_name:handle_type})
+
+    # aforementioned second pass. actually builds the declarations
+    for message in parser.messages:
+        handle_type = GLOBAL_CLASS_TABLE[message.full_name]
+
+        oheader_string += '\n' + TEMPLATE_C_MESSAGE_SECTION.format(message.full_name) + '\n'
+        oheader_string += TEMPLATE_C_TYPEDEF_HANDLE.format(handle_type) + '\n'
+        oheader_string += generate_constructor_declaration(message)
+        oheader_string += generate_destructor_declaration(message) + '\n'
+
+        for message_entry in message.entries:
+            oheader_string += generate_setter_declaration(message, message_entry)
+
+    oheader_string += '\n' + TEMPLATE_C_EXTERN_C_CLOSE + '\n'
+    oheader_string += TEMPLATE_C_INCLUDE_GUARD_CLOSE.format(oheader_guard_symbol)
+
+    return oheader_string
+
+def generate_osource(oheader_filename, osource_filename, parser):
+    """
+    generate_osource
+
+    Generate the output source file. This consists of all of the function definitions
+    """
+
+    osource_string = ''
+
+    osource_string += TEMPLATE_C_DO_NOT_EDIT.format(datetime.datetime.now())
+    osource_string += TEMPLATE_C_INCLUDE_QUOTE.format(oheader_filename)
+    osource_string += TEMPLATE_C_INCLUDE_QUOTE.format(oheader_filename.replace('C_', ''))
+
+    # building the function definitions is easier due to the information stored away while building
+    # the declarations
+    for message in parser.messages:
+        osource_string += '\n' + TEMPLATE_C_MESSAGE_SECTION.format(message.full_name) + '\n\n'
+        for function_descriptor in GLOBAL_FUNCTIONS_TABLE[message.full_name]:
+            osource_string += generate_function_definition(function_descriptor) + '\n\n'
+
+    return osource_string
+
+def main():
+    if (sys.argv.count <= 1):
+        print('Usage: {} <protobuf_idl>')
+        sys.exit(1)
+
+    idl_fullpath = sys.argv[1]
+    idl_filename = idl_fullpath.split('/')[-1]
+    output_path = idl_fullpath[:-len(idl_filename)]
+
+    oheader_filename = TEMPLATE_C_PREFIX.format('{}.{}.{}'.format(
+        idl_filename.split('.')[0], FILE_PROTOBUF_IDENT, FILE_HEADER_EXT))
+    osource_filename = '{}.{}.{}'.format(oheader_filename.split('.')[0], FILE_PROTOBUF_IDENT, FILE_CPP_EXT)
+
+
+    try:
+        idl_file = open(output_path + idl_filename, 'r')
+        idl = idl_file.read()
+
+        parser = ProtoBufParser(idl)
+
+        oheader_file = open(output_path + oheader_filename, 'w')
+        osource_file = open(output_path + osource_filename, 'w')
+
+        #print(generate_oheader(oheader_filename, parser))
+        oheader_file.write(generate_oheader(oheader_filename, parser))
+        #print(generate_osource(oheader_filename, osource_filename, parser))
+        osource_file.write(generate_osource(oheader_filename, osource_filename, parser))
+
+        oheader_file.close()
+        osource_file.close()
+    except Exception as e:
+        traceback.print_exc(e)
+
+
+if __name__ == '__main__':
+    main()
