@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import collections
 import datetime
 import re
@@ -30,6 +31,7 @@ TEMPLATE_C_CONSTRUCTOR_NAME = '{}_create'
 TEMPLATE_C_DESTRUCTOR_NAME = '{}_destroy'
 TEMPLATE_C_SETTER_NAME = '{}_set_{}'
 TEMPLATE_C_SETTER_ARG_LIST = '{} handle, {} value'
+TEMPLATE_C_SETTER_NOARGS = '{} handle'
 TEMPLATE_C_ADDER_NAME = '{}_add_{}'
 TEMPLATE_C_INDENT = '    '
 
@@ -37,6 +39,7 @@ TEMPLATE_CPP_RETURN_NEW_OBJECT = 'return new {}();\n'
 TEMPLATE_CPP_OBJECT_CAST = '{0}* object = reinterpret_cast<{0}*>(handle);\n'
 TEMPLATE_CPP_OBJECT_DELETE = 'delete object;\n'
 TEMPLATE_CPP_OBJECT_MEMBER_SET = 'object->{}(value);\n'
+TEMPLATE_CPP_OBJECT_CLASS_MEMBER_SET = 'return object->{}();\n'
 TEMPLATE_CPP_OBJECT_ENUM_MEMBER_CAST = '{0} translated_value = static_cast<{0}>(value);\n'
 TEMPLATE_CPP_OBJECT_ENUM_MEMBER_SET = 'object->{}(translated_value);\n'
 
@@ -52,6 +55,10 @@ FUNCTION_DECL = 'function_decl'
 FUNCTION_NAME = 'function_name'
 
 FUNCTION_VALUE_TYPE = 'function_value_type'
+
+FUNCTION_SUBTYPE = 'function_subtype'
+FUNCTION_SUBTYPE_SETTER_SINGLE = 'setter_single'
+FUNCTION_SUBTYPE_SETTER_REPEATED = 'setter_repeated'
 
 GLOBAL_BUILT_IN_TYPES_TABLE = {'double':'double',
                                'float':'float',
@@ -128,21 +135,30 @@ def generate_setter_declaration(message, message_entry):
 
     if data_type in GLOBAL_BUILT_IN_TYPES_TABLE.keys():
         c_type = GLOBAL_BUILT_IN_TYPES_TABLE[data_type]
+        return_type = 'void'
+        argument = TEMPLATE_C_SETTER_ARG_LIST.format(GLOBAL_CLASS_TABLE[class_name], c_type)
     elif data_type in GLOBAL_CLASS_TABLE.keys():
         c_type = GLOBAL_CLASS_TABLE[data_type]
+        return_type = c_type
+        argument = TEMPLATE_C_SETTER_NOARGS.format(GLOBAL_CLASS_TABLE[class_name])
     elif data_type in GLOBAL_ENUM_TABLE.keys():
         c_type = GLOBAL_ENUM_TABLE[data_type]
+        return_type = 'void'
+        argument = TEMPLATE_C_SETTER_ARG_LIST.format(GLOBAL_CLASS_TABLE[class_name], c_type)
 
     if 'repeated' in message_entry.modifiers:
         setter_name = TEMPLATE_C_ADDER_NAME.format(class_name, message_entry.name.lower())
+        function_subtype = FUNCTION_SUBTYPE_SETTER_REPEATED
     else:
         setter_name = TEMPLATE_C_SETTER_NAME.format(class_name, message_entry.name.lower())
+        function_subtype = FUNCTION_SUBTYPE_SETTER_SINGLE
 
-    setter_decl_string = TEMPLATE_C_FUNC_DECL.format('void', setter_name,
-                                                     TEMPLATE_C_SETTER_ARG_LIST.format(GLOBAL_CLASS_TABLE[class_name], c_type))
+    setter_decl_string = TEMPLATE_C_FUNC_DECL.format(return_type, setter_name, argument)
+                                                     
 
     function_descriptor = collections.OrderedDict()
     function_descriptor.update({FUNCTION_TYPE:FUNCTION_TYPE_SETTER})
+    function_descriptor.update({FUNCTION_SUBTYPE:function_subtype})
     function_descriptor.update({FUNCTION_CLASS:class_name})
     function_descriptor.update({FUNCTION_DECL:setter_decl_string})
     function_descriptor.update({FUNCTION_NAME:setter_name})
@@ -185,11 +201,15 @@ def generate_function_definition(function_descriptor):
         function_body = TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_CAST.format(function_descriptor[FUNCTION_CLASS])
         setter_name_prefix = '{}_'.format(function_descriptor[FUNCTION_CLASS])
         method_name = function_descriptor[FUNCTION_NAME].replace(setter_name_prefix, '')
-
+        
         if function_descriptor[FUNCTION_VALUE_TYPE] in GLOBAL_ENUM_TABLE.keys():
             function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_ENUM_MEMBER_CAST.format(
                     function_descriptor[FUNCTION_VALUE_TYPE])
             function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_ENUM_MEMBER_SET.format(method_name)
+        elif function_descriptor[FUNCTION_VALUE_TYPE] in GLOBAL_CLASS_TABLE.keys():
+            if function_descriptor[FUNCTION_SUBTYPE] == FUNCTION_SUBTYPE_SETTER_SINGLE:
+                        method_name = method_name.replace('set_', 'mutable_')
+            function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_CLASS_MEMBER_SET.format(method_name)
         else:
             function_body += TEMPLATE_C_INDENT + TEMPLATE_CPP_OBJECT_MEMBER_SET.format(method_name)
 
